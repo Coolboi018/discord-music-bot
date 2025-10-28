@@ -1,6 +1,6 @@
-discord.py
-yt-dlp
+discord.py==2.3.2
+yt-dlp>=2024.0.0
+requests
 PyNaCl
 flask
 spotipy
-requests
