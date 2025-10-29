@@ -1,1 +1,7 @@
-Flask
+discord.py==2.4.0
+yt-dlp==2024.10.7
+asyncio
+requests
+spotipy==2.23.0
+flask==3.0.3
+python-dotenv
