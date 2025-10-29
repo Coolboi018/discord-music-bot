@@ -3,12 +3,11 @@ discord.py==2.3.2
 
 # Flask for keep-alive/health checks
 Flask==3.0.0
-Werkzeug==3.0.1
 
 # Audio/video downloading
 yt-dlp==2024.10.22
 
-# FFmpeg for audio processing (binary must be installed separately on Render)
+# Audio processing
 PyNaCl==1.5.0
 
 # HTTP requests
@@ -17,22 +16,11 @@ requests==2.31.0
 # Spotify integration (optional)
 spotipy==2.24.0
 
-# Additional dependencies
-certifi==2024.8.30
+# Required by discord.py
+aiohttp==3.9.1
+
+# Additional stable versions
+certifi==2024.2.2
 charset-normalizer==3.3.2
-idna==3.10
-urllib3==2.2.3
-aiohttp==3.9.5
-async-timeout==4.0.3
-attrs==24.2.0
-frozenlist==1.4.1
-multidict==6.1.0
-yarl==1.13.1
-blinker==1.8.2
-click==8.1.7
-itsdangerous==2.2.0
-Jinja2==3.1.4
-MarkupSafe==2.1.5
-redis==5.0.1
-six==1.16.0
-typing_extensions==4.12.2
+idna==3.6
+urllib3==2.2.0
