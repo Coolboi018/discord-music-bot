@@ -1,8 +1,5 @@
-# Using a known stable discord.py version
-discord.py[voice]==2.3.2
-# Let's try the latest yt-dlp to satisfy the requests dependency
-yt-dlp
-PyNaCl==1.5.0
+discord.py==2.3.2
+yt-dlp==2024.10.7
 spotipy==2.24.0
-# Remove the requests pin entirely to let pip decide
-aiohttp==3.9.5
+asyncio
+PyNaCl
