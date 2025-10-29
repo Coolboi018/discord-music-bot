@@ -1,7 +1,6 @@
 discord.py[voice]==2.3.2
-yt-dlp==2024.8.6
+yt-dlp==2024.8.6  # Pinning this to match your earlier version
 PyNaCl==1.5.0
 spotipy==2.24.0
-requests==2.31.0  # Re-add for bot functionality
+# REMOVE the requests line entirely: requests==2.31.0
 aiohttp==3.9.5
-# REMOVE audiodev
