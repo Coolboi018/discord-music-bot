@@ -5,3 +5,4 @@ requests
 spotipy==2.23.0
 flask==3.0.3
 python-dotenv
+PyNaCl
