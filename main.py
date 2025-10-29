@@ -595,13 +595,18 @@ async def start_web_server():
     await site.start()
     logger.info(f"Health check server started on port {os.getenv('PORT', 8080)}")
 
+# ... (rest of the file)
+
 # Main execution
 if __name__ == "__main__":
-    # ...
+    token = os.getenv('DISCORD_TOKEN')
+    if not token:
+        logger.error("DISCORD_TOKEN not found in environment variables!")
+        exit(1)
     
     # Start health check server
     loop = asyncio.get_event_loop()
-    loop.create_task(start_web_server()) # This is correct, it starts the web server task
+    loop.create_task(start_web_server())
     
     # Run bot
     bot.run(token)
