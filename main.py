@@ -581,19 +581,6 @@ async def commands_list(ctx):
 
 
 # Health check endpoint for Render
-from aiohttp import web
-
-async def health_check(request):
-    return web.Response(text="Bot is running")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8080)))
-    await site.start()
-    logger.info(f"Health check server started on port {os.getenv('PORT', 8080)}")
 
 # ... (rest of the file)
 
@@ -604,9 +591,8 @@ if __name__ == "__main__":
         logger.error("DISCORD_TOKEN not found in environment variables!")
         exit(1)
     
-    # Start health check server
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_web_server())
+    # loop = asyncio.get_event_loop()  <-- REMOVE these lines
+    # loop.create_task(start_web_server()) <-- REMOVE these lines
     
     # Run bot
     bot.run(token)
