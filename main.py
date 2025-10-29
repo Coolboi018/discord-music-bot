@@ -2,6 +2,12 @@ from keep_alive import keep_alive
 
 keep_alive()
 
+
+
+# Fix voice event loop for async
+
+if os.name == 'nt':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import discord
 from discord.ext import commands
 import yt_dlp
