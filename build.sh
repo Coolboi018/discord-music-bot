@@ -1,9 +1,10 @@
-#!/usr/bin/env bash
-# exit on error
-set -o errexit
+#!/bin/bash
 
-# Install FFmpeg with all audio codecs (required for high-quality audio processing)
-apt-get update && apt-get install -y ffmpeg libavcodec-extra
+# Update package list
+apt-get update
+
+# Install FFmpeg (required for audio processing)
+apt-get install -y ffmpeg
 
 # Install Python dependencies
 pip install --upgrade pip
