@@ -181,5 +181,5 @@ async def loop(ctx):
 
 # --- Run bot ---
 if __name__ == "__main__":
-    token = os.getenv("TOKEN")
+    token = os.getenv("DISCORD_TOKEN")
     bot.run(token)
