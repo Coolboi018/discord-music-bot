@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import yt_dlp
 import asyncio
+from aiohttp import web
 from collections import deque
 import os
 import re
@@ -580,19 +581,36 @@ async def commands_list(ctx):
     await ctx.send(help_text)
 
 
-# Health check endpoint for Render
+async def health_check(request):
+    """Responds to Render's health check request."""
+    return web.Response(text="Bot is running")
 
-# ... (rest of the file)
-
-# Main execution
+async def start_web_server():
+    """Starts a minimal aiohttp web server to satisfy Render's Web Service requirements."""
+    # Use the PORT environment variable provided by Render, defaulting to 8080
+    port = int(os.getenv('PORT', 8080)) 
+    
+    app = web.Application()
+    app.router.add_get('/', health_check) 
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Bind to 0.0.0.0 and the determined port
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Health check server started on port {port}")
+    
 if __name__ == "__main__":
     token = os.getenv('DISCORD_TOKEN')
     if not token:
-        logger.error("DISCORD_TOKEN not found in environment variables!")
+        print("DISCORD_TOKEN not found in environment variables!")
         exit(1)
     
-    # loop = asyncio.get_event_loop()  <-- REMOVE these lines
-    # loop.create_task(start_web_server()) <-- REMOVE these lines
+    # CRITICAL: Get the event loop and schedule the web server task
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_web_server()) 
     
-    # Run bot
+    # Run the Discord bot (this is the blocking call)
     bot.run(token)
