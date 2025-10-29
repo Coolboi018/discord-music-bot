@@ -2,9 +2,7 @@ services:
   - type: web
     name: discord-music-bot
     env: python
-    buildCommand: |
-      apt-get update && apt-get install -y ffmpeg
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: DISCORD_TOKEN
@@ -15,3 +13,4 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: 3.11.0
+    # FFmpeg is pre-installed on Render Python environment
