@@ -45,9 +45,6 @@ ytdl_opts = {
     'fragment_retries': 5,
     'skip_unavailable_fragments': True,
     'ignoreerrors': True,
-    'no_check_certificate': True,
-    'extract_flat': False,
-    'cachedir': False,
     'nocheckcertificate': True,
     'age_limit': None,
     'geo_bypass': True,
@@ -56,6 +53,10 @@ ytdl_opts = {
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'best',
     }],
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'youtube_include_dash_manifest': False,
+    'extractor_args': {'youtube': {'player_skip': ['configs']}},
+    'cookiefile': 'cookies.txt',  # optional but helps avoid 403s
 }
 
 # Enhanced FFmpeg options for better audio quality
@@ -78,33 +79,45 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.search_query = data.get('search_query')  # Store for loop functionality
 
     @classmethod
-    async def from_url(cls, url, *, loop=None, store_query=True):
-        loop = loop or asyncio.get_event_loop()
+async def from_url(cls, url, *, loop=None, store_query=True):
+    loop = loop or asyncio.get_event_loop()
 
-        try:
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False)),
-                timeout=60.0
-            )
+    try:
+        def extract():
+            try:
+                return ytdl.extract_info(url, download=False)
+            except Exception as e:
+                logger.error(f"yt-dlp extraction failed for {url}: {e}")
+                return None
 
-            if 'entries' in data:
-                if not data['entries']:
-                    raise Exception("❌ No results found for this song.")
-                data = data['entries'][0]
+        data = await asyncio.wait_for(loop.run_in_executor(None, extract), timeout=60.0)
 
-            if store_query:
-                data['search_query'] = url
+        if not data:
+            raise Exception("❌ Could not extract YouTube info (might be blocked or invalid link).")
 
-            return cls(
-                discord.FFmpegPCMAudio(data['url'], **ffmpeg_opts),
-                data=data
-            )
+        if 'entries' in data:
+            entries = data.get('entries') or []
+            if not entries:
+                raise Exception("❌ No results found for this song.")
+            data = entries[0]
 
-        except asyncio.TimeoutError:
-            raise Exception("⏱️ Timeout: YouTube took too long to respond. Try again!")
-        except Exception as e:
-            logger.error(f"YTDL Error: {e}")
-            raise Exception(f"⚠️ YouTube error: {str(e)[:150]}")
+        if store_query:
+            data['search_query'] = url
+
+        stream_url = data.get('url')
+        if not stream_url:
+            raise Exception("❌ No valid audio stream found.")
+
+        return cls(
+            discord.FFmpegPCMAudio(stream_url, **ffmpeg_opts),
+            data=data
+        )
+
+    except asyncio.TimeoutError:
+        raise Exception("⏱️ Timeout: YouTube took too long to respond. Try again!")
+    except Exception as e:
+        logger.error(f"YTDL Error: {e}", exc_info=True)
+        raise Exception(f"⚠️ YouTube error: {str(e)[:150]}")
 
 
 @bot.event
@@ -603,14 +616,22 @@ async def start_web_server():
     print(f"Health check server started on port {port}")
     
 if __name__ == "__main__":
-    token = os.getenv('DISCORD_TOKEN')
+    token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("DISCORD_TOKEN not found in environment variables!")
+        print("❌ DISCORD_TOKEN not found in environment variables!")
         exit(1)
-    
-    # CRITICAL: Get the event loop and schedule the web server task
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_web_server()) 
-    
-    # Run the Discord bot (this is the blocking call)
-    bot.run(token)
+
+    async def main():
+        # Start the aiohttp web server
+        port = int(os.getenv("PORT", 8080))
+        logger.info(f"🌐 Starting health check server on port {port}")
+        await start_web_server()
+
+        # Start the bot
+        logger.info("🤖 Starting Discord bot...")
+        await bot.start(token)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot shut down manually.")
