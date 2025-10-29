@@ -1,5 +1,3 @@
-from flask import Flask
-from threading import Thread
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -8,6 +6,11 @@ from collections import deque
 import os
 import re
 import requests
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Optional Spotify support
 try:
@@ -15,27 +18,8 @@ try:
     from spotipy.oauth2 import SpotifyClientCredentials
     SPOTIFY_AVAILABLE = True
 except Exception:
-    spotipy = None
     SPOTIFY_AVAILABLE = False
-
-# Flask web server to keep bot alive
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🎵 Music Bot is alive and running!"
-
-@app.route('/health')
-def health():
-    return {"status": "healthy", "bot": "online"}
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_flask, daemon=True)
-    t.start()
-    print("✅ Flask server started on port 8080")
+    logger.warning("Spotify support not available")
 
 # Bot setup
 intents = discord.Intents.default()
@@ -43,15 +27,12 @@ intents.message_content = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Remove default help command
-bot.remove_command('help')
-
 # Queue system
 music_queues = {}
 now_playing = {}
-loop_mode = {}
+loop_mode = {}  # New: Track loop mode per guild
 
-# yt-dlp options for high quality audio
+# Enhanced yt-dlp options for better audio quality
 ytdl_opts = {
     'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
     'quiet': True,
@@ -59,41 +40,44 @@ ytdl_opts = {
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'socket_timeout': 30,
-    'retries': 3,
-    'fragment_retries': 3,
+    'retries': 5,
+    'fragment_retries': 5,
     'skip_unavailable_fragments': True,
     'ignoreerrors': True,
     'no_check_certificate': True,
-    'extract_flat': 'in_playlist',
-    'noplaylist': False,
+    'extract_flat': False,
+    'cachedir': False,
+    'nocheckcertificate': True,
+    'age_limit': None,
+    'geo_bypass': True,
     'prefer_ffmpeg': True,
-    'keepvideo': False,
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'best',
-        'preferredquality': '0',  # Best quality
     }],
 }
 
-# High quality FFmpeg options
+# Enhanced FFmpeg options for better audio quality
 ffmpeg_opts = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -b:a 320k'  # 320kbps audio bitrate for better quality
+    'options': '-vn -b:a 192k -ar 48000 -ac 2'
 }
 
 ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5):
+    def __init__(self, source, *, data, volume=0.6):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get('title')
         self.url = data.get('url')
-        self.webpage_url = data.get('webpage_url')
+        self.duration = data.get('duration')
+        self.thumbnail = data.get('thumbnail')
+        self.search_query = data.get('search_query')  # Store for loop functionality
 
     @classmethod
-    async def from_url(cls, url, *, loop=None):
+    async def from_url(cls, url, *, loop=None, store_query=True):
         loop = loop or asyncio.get_event_loop()
 
         try:
@@ -104,8 +88,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
             if 'entries' in data:
                 if not data['entries']:
-                    raise Exception("❌ No results found.")
+                    raise Exception("❌ No results found for this song.")
                 data = data['entries'][0]
+
+            if store_query:
+                data['search_query'] = url
 
             return cls(
                 discord.FFmpegPCMAudio(data['url'], **ffmpeg_opts),
@@ -115,13 +102,22 @@ class YTDLSource(discord.PCMVolumeTransformer):
         except asyncio.TimeoutError:
             raise Exception("⏱️ Timeout: YouTube took too long to respond. Try again!")
         except Exception as e:
-            raise Exception(f"⚠️ Error: {str(e)[:150]}")
+            logger.error(f"YTDL Error: {e}")
+            raise Exception(f"⚠️ YouTube error: {str(e)[:150]}")
 
 
 @bot.event
 async def on_ready():
-    print(f'✅ {bot.user} is online!')
-    print(f'Spotify support: {"Enabled" if SPOTIFY_AVAILABLE else "Disabled"}')
+    logger.info(f'✅ {bot.user} is online!')
+    await bot.change_presence(activity=discord.Game(name="!commands for help"))
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    logger.error(f"Command error: {error}")
+    await ctx.send(f"❌ An error occurred: {str(error)[:200]}")
 
 
 def extract_spotify_title(spotify_url):
@@ -135,22 +131,19 @@ def extract_spotify_title(spotify_url):
             clean_title = title_text.replace('| Spotify', '').replace(' - song and lyrics by', '').strip()
             return clean_title
     except Exception as e:
-        print(f"Error extracting Spotify title: {e}")
+        logger.error(f"Spotify scraping error: {e}")
+        return None
     return None
 
 
 def get_spotify_track_queries(spotify_url):
-    """Returns list of 'Song Artist' search queries from Spotify"""
+    """Returns list of 'Song Artist' search queries from Spotify URL"""
     queries = []
-
-    if not SPOTIFY_AVAILABLE:
-        return queries
 
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
     
-    if not client_id or not client_secret:
-        print("⚠️ Spotify credentials not found")
+    if not SPOTIFY_AVAILABLE or not client_id or not client_secret:
         return queries
 
     try:
@@ -163,100 +156,60 @@ def get_spotify_track_queries(spotify_url):
         if "track" in spotify_url and "playlist" not in spotify_url:
             track = sp.track(spotify_url)
             name = track.get('name')
-            artist = track.get('artists', [{}])[0].get('name', '')
+            artist = track.get('artists')[0].get('name') if track.get('artists') else ''
             queries.append(f"{name} {artist}")
 
         elif "playlist" in spotify_url:
             results = sp.playlist_tracks(spotify_url)
-            max_iterations = 50  # Safety limit
-            iterations = 0
-            
-            while results and iterations < max_iterations:
+            while results:
                 items = results.get('items', [])
                 for item in items:
                     track = item.get('track')
                     if not track:
                         continue
                     name = track.get('name')
-                    artist = track.get('artists', [{}])[0].get('name', '')
-                    if name:
-                        queries.append(f"{name} {artist}")
+                    artist = track.get('artists')[0].get('name') if track.get('artists') else ''
+                    queries.append(f"{name} {artist}")
                 
                 if results.get('next'):
                     results = sp.next(results)
-                    iterations += 1
                 else:
                     break
 
         elif "album" in spotify_url:
             results = sp.album_tracks(spotify_url)
-            max_iterations = 50
-            iterations = 0
-            
-            while results and iterations < max_iterations:
+            while results:
                 items = results.get('items', [])
                 for item in items:
                     name = item.get('name')
-                    artist = item.get('artists', [{}])[0].get('name', '')
-                    if name:
-                        queries.append(f"{name} {artist}")
+                    artist = item.get('artists')[0].get('name') if item.get('artists') else ''
+                    queries.append(f"{name} {artist}")
                 
                 if results.get('next'):
                     results = sp.next(results)
-                    iterations += 1
                 else:
                     break
 
     except Exception as e:
-        print(f"Spotify API error: {e}")
+        logger.error(f"Spotify API error: {e}")
     
     return queries
 
 
-async def get_youtube_playlist(url):
-    """Extract all videos from a YouTube playlist"""
-    try:
-        loop = asyncio.get_event_loop()
-        
-        # First extract with flat extraction
-        ytdl_playlist = yt_dlp.YoutubeDL({
-            **ytdl_opts,
-            'extract_flat': True,
-            'quiet': True
-        })
-        
-        data = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: ytdl_playlist.extract_info(url, download=False)),
-            timeout=90.0
-        )
-
-        if 'entries' in data and data['entries']:
-            # Return video URLs
-            videos = []
-            for entry in data['entries']:
-                if entry and entry.get('id'):
-                    video_url = f"https://www.youtube.com/watch?v={entry['id']}"
-                    videos.append({
-                        'url': video_url,
-                        'title': entry.get('title', 'Unknown')
-                    })
-            return videos
-        return []
-        
-    except Exception as e:
-        print(f"Playlist extraction error: {e}")
-        return []
-
-
 @bot.command(name='play', aliases=['p'])
 async def play(ctx, *, query):
+    """Play a song from YouTube, Spotify, or search query"""
     if not ctx.author.voice:
-        await ctx.send("❌ Join a voice channel first! 🤡")
+        await ctx.send("❌ Join a voice channel first! 🎧")
         return
 
     channel = ctx.author.voice.channel
     if not ctx.voice_client:
-        await channel.connect()
+        try:
+            await channel.connect()
+        except Exception as e:
+            await ctx.send(f"❌ Couldn't connect to voice channel: {e}")
+            return
 
     async with ctx.typing():
         try:
@@ -264,9 +217,8 @@ async def play(ctx, *, query):
             if guild_id not in music_queues:
                 music_queues[guild_id] = deque()
             if guild_id not in loop_mode:
-                loop_mode[guild_id] = 'off'
+                loop_mode[guild_id] = "off"
 
-            # Spotify handling
             if "spotify.com" in query:
                 queries = get_spotify_track_queries(query)
 
@@ -275,14 +227,14 @@ async def play(ctx, *, query):
                     added = 0
                     failed = 0
                     
-                    for q in queries[:100]:  # Limit to 100 tracks
-                        search_q = f"ytsearch:{q}"
+                    for q in queries:
+                        search_q = f"ytsearch:{q} audio"
                         try:
                             player = await YTDLSource.from_url(search_q, loop=bot.loop)
                             music_queues[guild_id].append(player)
                             added += 1
                         except Exception as e:
-                            print(f"YT search error for '{q}': {e}")
+                            logger.error(f"YT search error for {q}: {e}")
                             failed += 1
                             continue
 
@@ -290,51 +242,21 @@ async def play(ctx, *, query):
                         await ctx.send("❌ Couldn't find any tracks on YouTube for that Spotify link.")
                         return
                     
-                    msg = f"✅ Added **{added}** tracks to the queue!"
+                    status_msg = f"✅ Added **{added}** tracks to the queue!"
                     if failed > 0:
-                        msg += f" ({failed} tracks failed)"
-                    await ctx.send(msg)
+                        status_msg += f" (⚠️ {failed} tracks failed)"
+                    await ctx.send(status_msg)
                 else:
-                    # Fallback: scrape title
                     title = extract_spotify_title(query)
                     if not title:
-                        await ctx.send("❌ Couldn't extract song from Spotify link. Spotify API credentials may be missing.")
+                        await ctx.send("❌ Couldn't extract song from Spotify link. Try the song name instead.")
                         return
                     
-                    search_q = f"ytsearch:{title}"
+                    search_q = f"ytsearch:{title} audio"
                     player = await YTDLSource.from_url(search_q, loop=bot.loop)
                     music_queues[guild_id].append(player)
                     await ctx.send(f"✅ Added to queue: **{player.title}**")
 
-            # YouTube playlist handling
-            elif "youtube.com/playlist" in query or "youtu.be/playlist" in query or "&list=" in query:
-                await ctx.send("📋 YouTube playlist detected! Extracting tracks...")
-                videos = await get_youtube_playlist(query)
-
-                if not videos:
-                    await ctx.send("❌ Couldn't extract playlist tracks.")
-                    return
-
-                await ctx.send(f"🔄 Processing {len(videos)} tracks...")
-                added = 0
-                failed = 0
-                
-                for video in videos[:100]:  # Limit to 100 tracks
-                    try:
-                        player = await YTDLSource.from_url(video['url'], loop=bot.loop)
-                        music_queues[guild_id].append(player)
-                        added += 1
-                    except Exception as e:
-                        print(f"Error adding playlist track '{video.get('title')}': {e}")
-                        failed += 1
-                        continue
-
-                msg = f"✅ Added **{added}** tracks from playlist to queue!"
-                if failed > 0:
-                    msg += f" ({failed} tracks failed)"
-                await ctx.send(msg)
-
-            # Regular YouTube link or search
             else:
                 if not query.startswith('http'):
                     query = f"ytsearch:{query}"
@@ -343,72 +265,139 @@ async def play(ctx, *, query):
                 music_queues[guild_id].append(player)
                 await ctx.send(f"✅ Added to queue: **{player.title}**")
 
-            # Start playing if nothing is playing
-            if not ctx.voice_client.is_playing():
+            if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                 await play_next(ctx)
 
         except Exception as e:
+            logger.error(f"Play command error: {e}", exc_info=True)
             await ctx.send(f"❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
 
 
 async def play_next(ctx):
+    """Play the next song in queue"""
     guild_id = ctx.guild.id
 
     if guild_id in music_queues and len(music_queues[guild_id]) > 0:
-        # Loop track mode
-        if loop_mode.get(guild_id) == 'track' and guild_id in now_playing:
-            player = now_playing[guild_id]
-            try:
-                player = await YTDLSource.from_url(
-                    player.webpage_url or player.title,
-                    loop=bot.loop
-                )
-            except Exception as e:
-                print(f"Error reloading track: {e}")
-        else:
-            player = music_queues[guild_id].popleft()
-            # Loop queue mode
-            if loop_mode.get(guild_id) == 'queue':
-                music_queues[guild_id].append(player)
-
+        player = music_queues[guild_id].popleft()
         now_playing[guild_id] = player
 
         def after(error):
             if error:
-                print(f"Playback error: {error}")
-            coro = play_next(ctx)
-            fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+                logger.error(f"Playback error: {error}")
+            
+            # Handle loop modes
+            if guild_id in loop_mode:
+                mode = loop_mode[guild_id]
+                
+                if mode == "one":
+                    # Re-add current song to front of queue
+                    async def requeue_current():
+                        try:
+                            if guild_id in now_playing:
+                                current = now_playing[guild_id]
+                                if hasattr(current, 'search_query') and current.search_query:
+                                    new_player = await YTDLSource.from_url(
+                                        current.search_query, 
+                                        loop=bot.loop
+                                    )
+                                    music_queues[guild_id].appendleft(new_player)
+                        except Exception as e:
+                            logger.error(f"Error re-queuing song: {e}")
+                        
+                        await play_next(ctx)
+                    
+                    asyncio.run_coroutine_threadsafe(requeue_current(), bot.loop)
+                    return
+                
+                elif mode == "all":
+                    # Re-add current song to end of queue
+                    async def requeue_for_all():
+                        try:
+                            if guild_id in now_playing:
+                                current = now_playing[guild_id]
+                                if hasattr(current, 'search_query') and current.search_query:
+                                    new_player = await YTDLSource.from_url(
+                                        current.search_query, 
+                                        loop=bot.loop
+                                    )
+                                    music_queues[guild_id].append(new_player)
+                        except Exception as e:
+                            logger.error(f"Error re-queuing song: {e}")
+                        
+                        await play_next(ctx)
+                    
+                    asyncio.run_coroutine_threadsafe(requeue_for_all(), bot.loop)
+                    return
+            
+            # Normal behavior: play next song
+            future = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
             try:
-                fut.result()
+                future.result()
             except Exception as e:
-                print(f"Error in after callback: {e}")
+                logger.error(f"Error in after callback: {e}")
 
         ctx.voice_client.play(player, after=after)
-
-        loop_emoji = ""
-        if loop_mode.get(guild_id) == 'track':
-            loop_emoji = " 🔂"
-        elif loop_mode.get(guild_id) == 'queue':
-            loop_emoji = " 🔁"
-
-        await ctx.send(f"🎵 Now playing: **{player.title}**{loop_emoji}")
-
+        
+        # Show loop status in now playing message
+        loop_status = ""
+        if guild_id in loop_mode and loop_mode[guild_id] != "off":
+            if loop_mode[guild_id] == "one":
+                loop_status = " 🔂"
+            elif loop_mode[guild_id] == "all":
+                loop_status = " 🔁"
+        
+        await ctx.send(f"🎵 Now playing: **{player.title}**{loop_status}")
     else:
         now_playing.pop(guild_id, None)
         await start_idle_timer(ctx)
 
 
 async def start_idle_timer(ctx):
-    await asyncio.sleep(120)
+    """Disconnect the bot after 3 minutes of inactivity"""
+    await asyncio.sleep(180)
     if ctx.voice_client and not ctx.voice_client.is_playing():
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Leaving due to inactivity. 💤")
+        await ctx.send("👋 Leaving due to inactivity. See you later! 💤")
+
+
+@bot.command(name='loop', aliases=['l', 'repeat'])
+async def loop(ctx, mode: str = None):
+    """Toggle loop mode: off, one (current song), all (queue)"""
+    guild_id = ctx.guild.id
+    
+    if guild_id not in loop_mode:
+        loop_mode[guild_id] = "off"
+    
+    if mode is None:
+        # Cycle through modes: off -> one -> all -> off
+        current = loop_mode[guild_id]
+        if current == "off":
+            loop_mode[guild_id] = "one"
+            await ctx.send("🔂 **Loop: Current Song** - This song will repeat!")
+        elif current == "one":
+            loop_mode[guild_id] = "all"
+            await ctx.send("🔁 **Loop: Queue** - The entire queue will repeat!")
+        else:
+            loop_mode[guild_id] = "off"
+            await ctx.send("➡️ **Loop: Off** - Playing normally")
+    else:
+        mode = mode.lower()
+        if mode in ["off", "none", "disable", "0"]:
+            loop_mode[guild_id] = "off"
+            await ctx.send("➡️ **Loop: Off** - Playing normally")
+        elif mode in ["one", "single", "song", "current", "1"]:
+            loop_mode[guild_id] = "one"
+            await ctx.send("🔂 **Loop: Current Song** - This song will repeat!")
+        elif mode in ["all", "queue", "playlist", "2"]:
+            loop_mode[guild_id] = "all"
+            await ctx.send("🔁 **Loop: Queue** - The entire queue will repeat!")
+        else:
+            await ctx.send("❌ Invalid mode! Use: `!loop [off/one/all]` or just `!loop` to cycle")
 
 
 @bot.command(name='skip', aliases=['s'])
 async def skip(ctx):
+    """Skip the current song"""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("⏭️ Skipped!")
@@ -418,6 +407,7 @@ async def skip(ctx):
 
 @bot.command(name='pause')
 async def pause(ctx):
+    """Pause the current song"""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         await ctx.send("⏸️ Paused!")
@@ -427,6 +417,7 @@ async def pause(ctx):
 
 @bot.command(name='resume', aliases=['r'])
 async def resume(ctx):
+    """Resume the paused song"""
     if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
         await ctx.send("▶️ Resumed!")
@@ -436,141 +427,182 @@ async def resume(ctx):
 
 @bot.command(name='stop')
 async def stop(ctx):
+    """Stop playback and clear queue"""
     guild_id = ctx.guild.id
     if guild_id in music_queues:
         music_queues[guild_id].clear()
     if guild_id in loop_mode:
-        loop_mode[guild_id] = 'off'
+        loop_mode[guild_id] = "off"
     if ctx.voice_client:
         ctx.voice_client.stop()
         await ctx.send("⏹️ Stopped and cleared queue!")
         await start_idle_timer(ctx)
+    else:
+        await ctx.send("❌ Not playing anything.")
 
 
 @bot.command(name='leave', aliases=['disconnect', 'dc'])
 async def leave(ctx):
+    """Disconnect the bot from voice channel"""
     if ctx.voice_client:
         guild_id = ctx.guild.id
         if guild_id in music_queues:
             music_queues[guild_id].clear()
         if guild_id in loop_mode:
-            loop_mode[guild_id] = 'off'
+            loop_mode[guild_id] = "off"
         await ctx.voice_client.disconnect()
         await ctx.send("👋 Bye! 🥹")
     else:
-        await ctx.send("❌ I'm not in a voice channel!")
+        await ctx.send("❌ I'm not in a voice channel.")
 
 
 @bot.command(name='queue', aliases=['q'])
 async def queue(ctx):
+    """Display the current queue"""
     guild_id = ctx.guild.id
+    
     if guild_id not in music_queues or len(music_queues[guild_id]) == 0:
         if guild_id in now_playing:
-            player = now_playing[guild_id]
-            await ctx.send(f"🎵 **Now Playing:** {player.title}\n\n❌ Queue is empty.")
+            loop_status = ""
+            if guild_id in loop_mode and loop_mode[guild_id] != "off":
+                if loop_mode[guild_id] == "one":
+                    loop_status = " 🔂"
+                elif loop_mode[guild_id] == "all":
+                    loop_status = " 🔁"
+            await ctx.send(f"🎵 **Now Playing:** {now_playing[guild_id].title}{loop_status}\n\n❌ Queue is empty!")
         else:
             await ctx.send("❌ Queue is empty!")
         return
 
-    queue_text = "🎵 **Music Queue:**\n\n"
-
+    queue_text = ""
     if guild_id in now_playing:
-        queue_text += f"**Now Playing:** {now_playing[guild_id].title}\n\n"
-
-    for i, player in enumerate(list(music_queues[guild_id])[:10], 1):
+        loop_status = ""
+        if guild_id in loop_mode and loop_mode[guild_id] != "off":
+            if loop_mode[guild_id] == "one":
+                loop_status = " 🔂"
+            elif loop_mode[guild_id] == "all":
+                loop_status = " 🔁"
+        queue_text += f"🎵 **Now Playing:** {now_playing[guild_id].title}{loop_status}\n\n"
+    
+    queue_text += "📃 **Queue:**\n"
+    
+    queue_list = list(music_queues[guild_id])[:15]
+    for i, player in enumerate(queue_list, 1):
         queue_text += f"{i}. {player.title}\n"
-
-    if len(music_queues[guild_id]) > 10:
-        queue_text += f"\n...and {len(music_queues[guild_id]) - 10} more tracks"
-
-    if loop_mode.get(guild_id) == 'track':
-        queue_text += "\n\n🔂 **Loop:** Current Track"
-    elif loop_mode.get(guild_id) == 'queue':
-        queue_text += "\n\n🔁 **Loop:** Entire Queue"
+    
+    if len(music_queues[guild_id]) > 15:
+        queue_text += f"\n... and {len(music_queues[guild_id]) - 15} more tracks"
 
     await ctx.send(queue_text)
 
 
-@bot.command(name='loop', aliases=['l'])
-async def loop_command(ctx, mode: str = None):
-    guild_id = ctx.guild.id
-
-    if guild_id not in loop_mode:
-        loop_mode[guild_id] = 'off'
-
-    if mode is None:
-        current = loop_mode[guild_id]
-        if current == 'off':
-            loop_mode[guild_id] = 'track'
-            await ctx.send("🔂 **Loop:** Current track enabled!")
-        elif current == 'track':
-            loop_mode[guild_id] = 'queue'
-            await ctx.send("🔁 **Loop:** Entire queue enabled!")
-        else:
-            loop_mode[guild_id] = 'off'
-            await ctx.send("❌ **Loop:** Disabled")
-    else:
-        mode = mode.lower()
-        if mode in ['track', 't', 'song', 'single']:
-            loop_mode[guild_id] = 'track'
-            await ctx.send("🔂 **Loop:** Current track enabled!")
-        elif mode in ['queue', 'q', 'all']:
-            loop_mode[guild_id] = 'queue'
-            await ctx.send("🔁 **Loop:** Entire queue enabled!")
-        elif mode in ['off', 'stop', 'disable']:
-            loop_mode[guild_id] = 'off'
-            await ctx.send("❌ **Loop:** Disabled")
-        else:
-            await ctx.send("❌ Invalid mode! Use: `!loop track`, `!loop queue`, or `!loop off`")
-
-
 @bot.command(name='nowplaying', aliases=['np'])
 async def nowplaying(ctx):
+    """Show currently playing song"""
     guild_id = ctx.guild.id
     if guild_id in now_playing:
         player = now_playing[guild_id]
         loop_status = ""
-        if loop_mode.get(guild_id) == 'track':
-            loop_status = " 🔂"
-        elif loop_mode.get(guild_id) == 'queue':
-            loop_status = " 🔁"
+        if guild_id in loop_mode and loop_mode[guild_id] != "off":
+            if loop_mode[guild_id] == "one":
+                loop_status = " 🔂"
+            elif loop_mode[guild_id] == "all":
+                loop_status = " 🔁"
         await ctx.send(f"🎵 **Now Playing:** {player.title}{loop_status}")
     else:
-        await ctx.send("❌ Nothing is playing right now!")
+        await ctx.send("❌ Nothing is playing right now.")
+
+
+@bot.command(name='clear')
+async def clear(ctx):
+    """Clear the queue"""
+    guild_id = ctx.guild.id
+    if guild_id in music_queues:
+        music_queues[guild_id].clear()
+        await ctx.send("🗑️ Queue cleared!")
+    else:
+        await ctx.send("❌ Queue is already empty!")
+
+
+@bot.command(name='volume', aliases=['vol'])
+async def volume(ctx, vol: int = None):
+    """Change the player volume (0-100)"""
+    if vol is None:
+        if ctx.voice_client and ctx.voice_client.source:
+            current_vol = int(ctx.voice_client.source.volume * 100)
+            await ctx.send(f"🔊 Current volume: **{current_vol}%**")
+        else:
+            await ctx.send("❌ Not playing anything.")
+        return
+    
+    if not 0 <= vol <= 100:
+        await ctx.send("❌ Volume must be between 0 and 100!")
+        return
+    
+    if ctx.voice_client and ctx.voice_client.source:
+        ctx.voice_client.source.volume = vol / 100
+        await ctx.send(f"🔊 Volume set to **{vol}%**")
+    else:
+        await ctx.send("❌ Not playing anything right now.")
 
 
 @bot.command(name='commands', aliases=['help'])
-async def commands(ctx):
+async def commands_list(ctx):
+    """Show all available commands"""
     help_text = """
 🎵 **Music Bot Commands:**
 
-**!play <song/link>** or **!p** - Play a song (YouTube, Spotify, or search)
-**!skip** or **!s** - Skip current song
-**!pause** - Pause music
-**!resume** or **!r** - Resume music
-**!loop** or **!l** - Toggle loop (off → track → queue → off)
-**!loop track** - Loop current track
-**!loop queue** - Loop entire queue
-**!loop off** - Disable loop
-**!queue** or **!q** - Show queue
-**!nowplaying** or **!np** - Show current song
-**!stop** - Stop and clear queue
-**!leave** or **!dc** - Disconnect bot
+**Playback:**
+`!play <song/link>` - Play a song (YouTube, Spotify)
+`!pause` - Pause music
+`!resume` - Resume music
+`!skip` - Skip current song
+`!stop` - Stop and clear queue
+`!loop [off/one/all]` - Toggle loop mode
 
-**Supports:**
-✅ YouTube links & playlists
-✅ Spotify links, playlists & albums (with API credentials)
-✅ Search by song name
+**Queue:**
+`!queue` - Show queue
+`!nowplaying` - Show current song
+`!clear` - Clear queue
+
+**Other:**
+`!volume <0-100>` - Set volume
+`!leave` - Disconnect bot
+`!commands` - Show this message
+
+**Loop Modes:**
+- `off` - Normal playback
+- `one` - Repeat current song 🔂
+- `all` - Repeat entire queue 🔁
+
+**Supported:** YouTube links, YouTube search, Spotify tracks/playlists/albums
     """
     await ctx.send(help_text)
 
 
-# Start Flask server
-keep_alive()
+# Health check endpoint for Render
+from aiohttp import web
 
-# Get token and run bot
-token = os.getenv('DISCORD_TOKEN')
-if not token:
-    raise ValueError("DISCORD_TOKEN environment variable not set!")
+async def health_check(request):
+    return web.Response(text="Bot is running")
 
-bot.run(token)
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8080)))
+    await site.start()
+    logger.info(f"Health check server started on port {os.getenv('PORT', 8080)}")
+
+# Main execution
+if __name__ == "__main__":
+    token = os.getenv('DISCORD_TOKEN')
+    if not token:
+        logger.error("DISCORD_TOKEN not found in environment variables!")
+        exit(1)
+    
+    loop_instance = asyncio.get_event_loop()
+    loop_instance.create_task(start_web_server())
+    
+    bot.run(token)
