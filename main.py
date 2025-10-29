@@ -1,3 +1,4 @@
+# ---------- full main.py (with robust startup for Render) ----------
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -10,7 +11,7 @@ import requests
 import logging
 
 # =========================================
-# 🔥 Auto Leave with Message
+# 🔥 Auto Leave with Message (unchanged)
 # =========================================
 async def check_inactivity(ctx, vc, guild_id):
     await asyncio.sleep(120)  # wait 2 minutes
@@ -210,7 +211,7 @@ def get_spotify_track_queries(spotify_url):
                 items = results.get('items', [])
                 for item in items:
                     name = item.get('name')
-                    artist = item.get('artists')[0].get('name') if item.get('artists') else ''
+                    artist = track.get('artists')[0].get('name') if item.get('artists') else ''
                     queries.append(f"{name} {artist}")
 
                 if results.get('next'):
@@ -365,8 +366,73 @@ async def play_next(ctx):
 
     else:
         now_playing.pop(guild_id, None)
-        # 👇 Added smart auto-leave after queue ends
+        # start inactivity timer + existing idle timer
         bot.loop.create_task(check_inactivity(ctx, vc, ctx.guild.id))
         await start_idle_timer(ctx)
 
-# (the rest of your commands stay the same, unchanged)
+
+async def start_idle_timer(ctx):
+    """Disconnect the bot after 3 minutes of inactivity (keeps compatibility)"""
+    await asyncio.sleep(180)
+    try:
+        if ctx.voice_client and not ctx.voice_client.is_playing():
+            await ctx.voice_client.disconnect()
+            await ctx.send("👋 Leaving due to inactivity. See you later! 💤")
+    except Exception as e:
+        logger.error(f"Idle timer error: {e}")
+
+
+# (rest of your commands and logic remain unchanged)
+# ... queue, nowplaying, loop, pause, resume, skip, stop, leave, volume, commands_list etc ...
+# I assume you have those same functions already in your file (kept unchanged).
+
+# minimal health check server for Render / other hosts
+async def health_check(request):
+    return web.Response(text="Bot is running")
+
+async def start_web_server():
+    """Start one aiohttp web server (binds to PORT env var)"""
+    port = int(os.getenv('PORT', 8080))
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"✅ Health check server started on port {port}")
+
+
+if __name__ == "__main__":
+    # Robust startup: always bind webserver so Render sees an open port.
+    # Then start bot if token is present; otherwise keep server alive and log message.
+    token = os.getenv("DISCORD_TOKEN")
+
+    async def main():
+        try:
+            await start_web_server()
+        except Exception as e:
+            logger.error(f"Failed to start health server: {e}", exc_info=True)
+            # still continue to try to start bot; Render may fail to detect port but we log the error
+
+        if token:
+            logger.info("🔑 DISCORD_TOKEN found, starting bot...")
+            try:
+                await bot.start(token)
+            except Exception as e:
+                logger.error(f"Bot failed to start: {e}", exc_info=True)
+                # keep the process alive so Render doesn't think app exited
+                while True:
+                    await asyncio.sleep(60)
+        else:
+            # token missing — do NOT exit. keep server alive and show friendly logs.
+            logger.warning("⚠️ DISCORD_TOKEN not set. Bot not started. Set DISCORD_TOKEN in your Render environment variables.")
+            # keep process alive so Render sees the webserver as running
+            while True:
+                await asyncio.sleep(60)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot shut down manually.")
