@@ -546,7 +546,7 @@ async def volume(ctx, vol: int = None):
         await ctx.send("❌ Not playing anything right now.")
 
 
-@bot.command(name='commands', aliases=['help'])
+@bot.command(name='commands')
 async def commands_list(ctx):
     """Show all available commands"""
     help_text = """
