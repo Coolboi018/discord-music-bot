@@ -1,25 +1,10 @@
-# Core Discord library
 discord.py==2.3.2
-
-# Flask for keep-alive/health checks
 Flask==3.0.0
-
-# Audio/video downloading
 yt-dlp==2024.10.22
-
-# Audio processing
 PyNaCl==1.5.0
-
-# HTTP requests
 requests==2.31.0
-
-# Spotify integration (optional)
 spotipy==2.24.0
-
-# Required by discord.py
 aiohttp==3.9.1
-
-# Additional stable versions
 certifi==2024.2.2
 charset-normalizer==3.3.2
 idna==3.6
