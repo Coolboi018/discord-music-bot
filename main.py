@@ -597,12 +597,11 @@ async def start_web_server():
 
 # Main execution
 if __name__ == "__main__":
-    token = os.getenv('DISCORD_TOKEN')
-    if not token:
-        logger.error("DISCORD_TOKEN not found in environment variables!")
-        exit(1)
+    # ...
     
-    loop_instance = asyncio.get_event_loop()
-    loop_instance.create_task(start_web_server())
+    # Start health check server
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_web_server()) # This is correct, it starts the web server task
     
+    # Run bot
     bot.run(token)
