@@ -1,12 +1,9 @@
 services:
   - type: web
     name: discord-music-bot
-    runtime: python
-    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: python bot.py
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: PORT
         value: 8080
       - key: DISCORD_TOKEN
