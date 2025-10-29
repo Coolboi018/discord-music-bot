@@ -17,12 +17,14 @@ ytdl_format_options = {
     'format': 'bestaudio/best',
     'outtmpl': 'downloads/%(id)s.%(ext)s',
     'restrictfilenames': True,
-    'noplaylist': False,
+    'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'quiet': True,
     'source_address': '0.0.0.0',
     'default_search': 'ytsearch',
+    'extract_flat': False,
+    'cookiefile': 'youtube.com_cookies.txt',
 }
 ffmpeg_options = {
     'options': '-vn'
